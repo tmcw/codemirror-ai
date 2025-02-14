@@ -201,7 +201,6 @@ export function aiExtension(opts: AiExtensionOptions): Extension[] {
 const selectionPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
-    private tooltip: HTMLDivElement | null = null;
 
     constructor(view: EditorView) {
       this.decorations = this.createDecorations(view);
@@ -224,11 +223,33 @@ const selectionPlugin = ViewPlugin.fromClass(
         update.viewportChanged ||
         update.transactions.some((tr) => tr.effects.some((e) => e.is(showTooltip)))
       ) {
-        this.decorations = this.createDecorations(update.view);
+        const adjustedFrom = this.#getRange(update.view);
+        if (adjustedFrom === null) {
+          this.decorations = Decoration.none;
+          return;
+        }
+        if (this.decorations.size !== 1) {
+          // TODO: adjust
+          this.decorations = this.createDecorations(update.view);
+          return;
+        }
+        this.decorations = this.decorations.update({
+          filter: () => false,
+          add: [
+            {
+              from: adjustedFrom,
+              to: adjustedFrom,
+              value: Decoration.widget({
+                widget: new ShortcutButton(),
+                side: -1,
+              }),
+            },
+          ],
+        });
       }
     }
 
-    createDecorations(view: EditorView) {
+    #getRange(view: EditorView): number | null {
       const { from, to } = view.state.selection.main;
       const inputStateValue = view.state.field(inputState);
       const completionStateValue = view.state.field(completionState);
@@ -244,7 +265,7 @@ const selectionPlugin = ViewPlugin.fromClass(
         from < 0 ||
         to > doc.length
       ) {
-        return Decoration.none;
+        return null;
       }
 
       // Adjust selection to exclude empty lines
@@ -259,46 +280,51 @@ const selectionPlugin = ViewPlugin.fromClass(
       }
 
       if (adjustedFrom === adjustedTo) {
-        return Decoration.none;
+        return null;
       }
 
-      if (!this.tooltip) {
-        const options = view.state.facet(optionsFacet);
-        const keymaps = { ...defaultKeymaps, ...options.keymaps };
-        this.tooltip = document.createElement("div");
-        this.tooltip.className = "cm-ai-tooltip";
-        this.tooltip.innerHTML = `<span>Edit <span class="hotkey">${formatKeymap(keymaps.showInput)}</span></span>`;
-        this.tooltip.querySelector("span")?.addEventListener("click", (evt) => {
-          evt.stopPropagation();
-          showAiEditInput(view);
-        });
-      }
-      const tooltip = this.tooltip;
+      return adjustedFrom;
+    }
 
+    createDecorations(view: EditorView) {
+      const adjustedFrom = this.#getRange(view);
+      if (adjustedFrom === null) return Decoration.none;
       return Decoration.set([
         Decoration.widget({
-          widget: new (class extends WidgetType {
-            toDOM() {
-              return tooltip;
-            }
-            override ignoreEvent() {
-              return true;
-            }
-          })(),
+          widget: new ShortcutButton(),
           side: -1,
         }).range(adjustedFrom),
       ]);
-    }
-
-    destroy() {
-      this.tooltip?.remove();
-      this.tooltip = null;
     }
   },
   {
     decorations: (v) => v.decorations,
   },
 );
+
+class ShortcutButton extends WidgetType {
+  toDOM(view: EditorView) {
+    const options = view.state.facet(optionsFacet);
+    const keymaps = { ...defaultKeymaps, ...options.keymaps };
+    const tooltip = document.createElement("div");
+    tooltip.className = "cm-ai-tooltip";
+    tooltip.innerHTML = `<span>Edit <span class="hotkey">${formatKeymap(keymaps.showInput)}</span></span>`;
+    tooltip.querySelector("span")?.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      showAiEditInput(view);
+    });
+    return tooltip;
+  }
+  updateDOM(_dom: HTMLElement, _view: EditorView) {
+    return true;
+  }
+  override ignoreEvent() {
+    return true;
+  }
+  eq(_other: ShortcutButton) {
+    return true;
+  }
+}
 
 // Command to show the input prompt
 export const showAiEditInput: Command = (view: EditorView) => {
@@ -509,7 +535,6 @@ class InputWidget extends WidgetType {
       loadingContainer.classList.add("hidden");
     }
 
-    // Focus management
     requestAnimationFrame(() => input.focus());
 
     const handleSubmit = async () => {
@@ -618,6 +643,10 @@ class InputWidget extends WidgetType {
   private cleanup() {
     this.abortController?.abort();
     this.abortController = null;
+  }
+
+  eq() {
+    return true;
   }
 
   destroy() {
